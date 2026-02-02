@@ -16,7 +16,12 @@ fn main() {
     println!("START RECORDING");
     audio_capture.start_record().unwrap();
     sleep(Duration::from_secs(180));
-    let samples = audio_capture.stop_record().unwrap();
+    audio_capture.stop_record().unwrap();
+    let mut reader = hound::WavReader::open("temp.wav").unwrap();
+    let samples: Vec<f32> = reader
+        .samples::<f32>()
+        .map(|s| s.unwrap()) // Распаковываем каждый Result
+        .collect();
     if samples.is_empty() {
         eprintln!("Нет аудио данных!");
         return;
