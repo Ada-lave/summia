@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.100"
 audioadapter-buffers = "2.0.0"
 cpal = "0.17.1"
 rubato = "1.0.1"
+thiserror = "2.0.18"
 whisper-rs = "0.15.1"
