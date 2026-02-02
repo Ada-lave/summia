@@ -1,2 +1,5 @@
 target
 models
+.DS_Store
+temp.wav
+stt_result.txt

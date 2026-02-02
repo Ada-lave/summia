@@ -46,7 +46,7 @@ pub trait AudioCapture {
     fn stop_record(&mut self) -> Result<(), BuildStreamError>;
 }
 
-pub fn make_audio_capture() -> Result<Box<dyn AudioCapture>, AudioInitError> {
+pub fn make_audio_capture() -> Result<Box<dyn AudioCapture + Send>, AudioInitError> {
     #[cfg(target_os = "linux")]
     {
         if let Some(device) = find_device("PulseAudio") {
@@ -59,7 +59,11 @@ pub fn make_audio_capture() -> Result<Box<dyn AudioCapture>, AudioInitError> {
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(device) = find_device("BlackHole") {
+        // Сначала пробуем LoopBack (Aggregate Device), потом BlackHole
+        if let Some(device) = find_device("LoopBack2") {
+            let cap = AudioCaptureImpl::try_new(device)?;
+            Ok(Box::new(cap))
+        } else if let Some(device) = find_device("BlackHole") {
             let cap = AudioCaptureImpl::try_new(device)?;
             Ok(Box::new(cap))
         } else {
@@ -172,26 +176,59 @@ pub fn find_device(name: &str) -> Option<Device> {
     })
 }
 
+/// Микширует interleaved аудио в моно
+fn mix_to_mono(interleaved: &[f32], num_channels: usize) -> Vec<f32> {
+    if num_channels == 0 {
+        return Vec::new();
+    }
+    interleaved
+        .chunks(num_channels)
+        .map(|ch| ch.iter().sum::<f32>() / num_channels as f32)
+        .collect()
+}
+
 pub fn build_input_stream(
     device: &Device,
     tx: Sender<ProcMsg>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
+    // Показываем все доступные конфигурации устройства
+    println!("Device: {:?}", device.description());
+    if let Ok(configs) = device.supported_input_configs() {
+        println!("Supported input configurations:");
+        for cfg in configs {
+            println!("  - channels: {}", cfg.channels());
+        }
+    }
+
+    // Получаем максимальное количество каналов
+    let max_channels = device
+        .supported_input_configs()
+        .ok()
+        .and_then(|configs| configs.map(|c| c.channels()).max())
+        .unwrap_or(2);
+
     let config = device.default_input_config().unwrap();
+    let sample_rate = config.sample_rate();
+
+    // Используем максимальное количество каналов вместо дефолтного
+    let num_channels = max_channels as usize;
     let stream_config = StreamConfig {
         buffer_size: cpal::BufferSize::Default,
-        channels: config.channels(),
-        sample_rate: config.sample_rate(),
+        channels: max_channels,
+        sample_rate,
     };
+
+    println!(
+        "Recording with {} channels (default was {})",
+        num_channels,
+        config.channels()
+    );
 
     device.build_input_stream(
         &stream_config,
         move |data: &[f32], _info: &InputCallbackInfo| {
-            let _ = tx.send(ProcMsg::AudioSamples(
-                data.to_vec()
-                    .chunks(2)
-                    .map(|ch| (ch[0] + ch.get(1).unwrap_or(&0.0)) / 2.0)
-                    .collect(),
-            ));
+            let mono = mix_to_mono(data, num_channels);
+            let _ = tx.send(ProcMsg::AudioSamples(mono));
         },
         |err: StreamError| eprintln!("Stream error: {}", err),
         None,
