@@ -1,23 +1,16 @@
 mod audio;
-mod resample;
 mod summary;
-mod whisper;
 
+use std::io::Write;
 use std::{fs::File, sync::mpsc::channel};
-use std::io::{Read, Write};
-use resample::resample_audio;
 
-const MODEL_PATH: &str = "models/ggml-medium.bin";
-const SAMPLE_RATE_INPUT: usize = 48000;
-const SAMPLE_RATE_WHISPER: usize = 16000;
+use fluidaudio_rs::FluidAudio;
 
 fn main() {
     record();
 }
 
-
-fn record () {
-    // Запись аудио
+fn record() {
     let mut audio_capture = audio::make_audio_capture().unwrap();
     println!("START RECORDING");
     let (tx, rx) = channel();
@@ -26,56 +19,34 @@ fn record () {
         println!("STOP RECORD");
         audio_capture.stop_record().unwrap();
         tx.send(()).unwrap();
-    }).unwrap();
+    })
+    .unwrap();
 
     rx.recv().unwrap();
 }
+
 fn stt() {
-    let mut reader = hound::WavReader::open("temp.wav").unwrap();
-    let samples: Vec<f32> = reader
-        .samples::<f32>()
-        .map(|s| s.unwrap())
-        .collect();
-    if samples.is_empty() {
-        eprintln!("Нет аудио данных!");
-        return;
-    }
+    let audio = FluidAudio::new().expect("Failed to create FluidAudio");
+    audio.init_asr().expect("Failed to initialize ASR");
 
-    // Resample 48kHz → 16kHz
-    let resampled = resample_audio(&samples, SAMPLE_RATE_INPUT, SAMPLE_RATE_WHISPER);
+    let result = audio
+        .transcribe_file("temp.wav")
+        .expect("Failed to transcribe");
 
-    // агрузка модели
-    let whisper_ctx = whisper::load_model(MODEL_PATH);
-    let mut state = whisper_ctx
-        .create_state()
-        .expect("Failed to create whisper state");
-
-    // Распознавание
-    let segments = whisper::transcribe(&mut state, &resampled);
+    println!("Transcription: {}", result.text);
+    println!("Confidence: {:.1}%", result.confidence * 100.0);
+    println!("Duration: {:.2}s", result.duration);
 
     match File::create("stt_result.txt") {
         Ok(mut stt_output) => {
-            for text in &segments {
-                writeln!(stt_output, "{}", text).unwrap();
-            }
+            writeln!(stt_output, "{}", result.text).unwrap();
         }
-        Err(_) => {}
+        Err(e) => eprintln!("Failed to write stt_result.txt: {}", e),
     }
 }
 
 fn summarize(text: &str) -> Result<(), summary::SummaryError> {
-    let mut full_text = String::new();
-    match File::open("stt_result.txt") {
-        Ok(mut stt_file) => {
-            stt_file.read_to_string(&mut full_text).unwrap();        
-        }
-        Err(_) => {}
-    }
-    if let Err(e) = summarize(&full_text) {
-        eprintln!("Ошибка суммаризации: {}", e);
-    }
-    println!();
-    println!("=== Суммаризация ===");
+    println!("\n=== Суммаризация ===");
 
     let summarizer = summary::create_summarizer()?;
     let result = summarizer.summarize(text)?;

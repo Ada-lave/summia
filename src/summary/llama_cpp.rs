@@ -1,6 +1,6 @@
-use super::{SummaryError, Summarizer};
-use llama_cpp_2::context::params::LlamaContextParams;
+use super::{Summarizer, SummaryError};
 use llama_cpp_2::context::LlamaContext;
+use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
@@ -66,11 +66,10 @@ impl Summarizer for LlamaCppSummarizer {
             .map_err(|e| SummaryError::ModelNotFound(format!("Failed to load model: {}", e)))?;
 
         // Создаём контекст
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(CONTEXT_SIZE));
-        let mut ctx = model
-            .new_context(&self.backend, ctx_params)
-            .map_err(|e| SummaryError::InferenceFailed(format!("Failed to create context: {}", e)))?;
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(CONTEXT_SIZE));
+        let mut ctx = model.new_context(&self.backend, ctx_params).map_err(|e| {
+            SummaryError::InferenceFailed(format!("Failed to create context: {}", e))
+        })?;
 
         // Формируем промпт
         let prompt = format!(
@@ -94,7 +93,8 @@ impl Summarizer for LlamaCppSummarizer {
 
         for (i, token) in tokens.iter().enumerate() {
             let is_last = i == tokens.len() - 1;
-            batch.add(*token, i as i32, &[0], is_last)
+            batch
+                .add(*token, i as i32, &[0], is_last)
                 .map_err(|e| SummaryError::InferenceFailed(format!("Batch add failed: {}", e)))?;
         }
 
@@ -122,15 +122,16 @@ impl Summarizer for LlamaCppSummarizer {
             }
 
             // Декодируем токен в текст
-            let token_str = model
-                .token_to_str(token, Special::Tokenize)
-                .map_err(|e| SummaryError::InferenceFailed(format!("Token decode failed: {}", e)))?;
+            let token_str = model.token_to_str(token, Special::Tokenize).map_err(|e| {
+                SummaryError::InferenceFailed(format!("Token decode failed: {}", e))
+            })?;
 
             result.push_str(&token_str);
 
             // Подготавливаем следующий batch
             batch.clear();
-            batch.add(token, n_cur as i32, &[0], true)
+            batch
+                .add(token, n_cur as i32, &[0], true)
                 .map_err(|e| SummaryError::InferenceFailed(format!("Batch add failed: {}", e)))?;
 
             ctx.decode(&mut batch)

@@ -5,18 +5,20 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
-audioadapter-buffers = "2.0.0"
 cpal = "0.17.1"
 ctrlc = "3.5.1"
 hound = "3.5.1"
-rubato = "1.0.1"
 thiserror = "2.0.18"
-whisper-rs = "0.15.1"
 serde = { version = "1.0", features = ["derive"] }
+fluidaudio-rs = "0.1.0"
 
 # MLX backend (macOS Apple Silicon) - HTTP client
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 reqwest = { version = "0.13.1", features = ["blocking", "json"] }
+
+# ScreenCaptureKit for system audio capture (macOS only)
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = "1.5.0"
 
 # llama.cpp backend (Linux, Windows, Intel Mac)
 [target.'cfg(not(all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
