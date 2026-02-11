@@ -1,10 +1,7 @@
 mod audio;
 mod summary;
 
-use std::io::Write;
-use std::{fs::File, sync::mpsc::channel};
-
-use fluidaudio_rs::FluidAudio;
+use std::{sync::mpsc::channel};
 
 fn main() {
     record();
@@ -26,23 +23,31 @@ fn record() {
 }
 
 fn stt() {
-    let audio = FluidAudio::new().expect("Failed to create FluidAudio");
-    audio.init_asr().expect("Failed to initialize ASR");
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
+        use std::{fs::File};
+        use fluidaudio_rs::FluidAudio;
 
-    let result = audio
-        .transcribe_file("temp.wav")
-        .expect("Failed to transcribe");
+        let audio = FluidAudio::new().expect("Failed to create FluidAudio");
+        audio.init_asr().expect("Failed to initialize ASR");
 
-    println!("Transcription: {}", result.text);
-    println!("Confidence: {:.1}%", result.confidence * 100.0);
-    println!("Duration: {:.2}s", result.duration);
+        let result = audio
+            .transcribe_file("temp.wav")
+            .expect("Failed to transcribe");
 
-    match File::create("stt_result.txt") {
-        Ok(mut stt_output) => {
-            writeln!(stt_output, "{}", result.text).unwrap();
+        println!("Transcription: {}", result.text);
+        println!("Confidence: {:.1}%", result.confidence * 100.0);
+        println!("Duration: {:.2}s", result.duration);
+
+        match File::create("stt_result.txt") {
+            Ok(mut stt_output) => {
+                writeln!(stt_output, "{}", result.text).unwrap();
+            }
+            Err(e) => eprintln!("Failed to write stt_result.txt: {}", e),
         }
-        Err(e) => eprintln!("Failed to write stt_result.txt: {}", e),
     }
+    
 }
 
 fn summarize(text: &str) -> Result<(), summary::SummaryError> {

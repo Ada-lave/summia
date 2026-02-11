@@ -1,9 +1,3 @@
-use std::{
-    sync::mpsc::{Receiver, Sender, channel},
-    thread::{JoinHandle, spawn},
-};
-
-use hound::WavWriter;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -42,7 +36,7 @@ pub trait AudioCapture {
     fn stop_record(&mut self) -> Result<(), Box<dyn std::error::Error>>;
 }
 
-pub fn make_audio_capture() -> Result<Box<dyn AudioCapture + Send>, AudioInitError> {
+pub fn make_audio_capture() -> Result<Box<dyn AudioCapture + Send>, AudioError> {
     #[cfg(target_os = "macos")]
     {
         let cap = MacOSAudioCapture::new()?;
@@ -51,13 +45,7 @@ pub fn make_audio_capture() -> Result<Box<dyn AudioCapture + Send>, AudioInitErr
 
     #[cfg(target_os = "linux")]
     {
-        use cpal::traits::{DeviceTrait, HostTrait};
-        if let Some(device) = find_device("PulseAudio") {
-            let cap = CpalAudioCapture::new(device);
-            Ok(Box::new(cap))
-        } else {
-            Err(AudioInitError::PulseAudioNotFound)
-        }
+        Err(AudioError::UnsupportedPlatform)
     }
 }
 
@@ -317,130 +305,3 @@ mod macos {
         }
     }
 }
-
-#[cfg(target_os = "macos")]
-pub use macos::MacOSAudioCapture;
-
-// ============================================================================
-// Linux: cpal (PulseAudio) — оставляем как было
-// ============================================================================
-
-#[cfg(target_os = "linux")]
-mod linux {
-    use super::*;
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    use cpal::{BuildStreamError, Device, Stream, StreamConfig, StreamError};
-
-    pub struct CpalAudioCapture {
-        wav_tx: Sender<ProcMsg>,
-        wav_rx: Option<Receiver<ProcMsg>>,
-        event_tx: Sender<Event>,
-        event_rx: Receiver<Event>,
-        stream: Option<Stream>,
-        device: Device,
-        writer_handle: Option<JoinHandle<()>>,
-    }
-
-    impl CpalAudioCapture {
-        pub fn new(device: Device) -> Self {
-            let (wav_tx, wav_rx) = channel();
-            let (event_tx, event_rx) = channel();
-            Self {
-                wav_tx,
-                wav_rx: Some(wav_rx),
-                event_tx,
-                event_rx,
-                stream: None,
-                device,
-                writer_handle: None,
-            }
-        }
-    }
-
-    impl AudioCapture for CpalAudioCapture {
-        fn start_record(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-            let wav_rx = self.wav_rx.take().expect("Recording already started!");
-
-            let config = self.device.default_input_config()?;
-            let num_channels = config.channels() as usize;
-            let stream_config = StreamConfig {
-                buffer_size: cpal::BufferSize::Default,
-                channels: config.channels(),
-                sample_rate: config.sample_rate(),
-            };
-
-            let tx = self.wav_tx.clone();
-            let stream = self.device.build_input_stream(
-                &stream_config,
-                move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                    let mono = mix_to_mono(data, num_channels);
-                    let _ = tx.send(ProcMsg::AudioSamples(mono));
-                },
-                |err: StreamError| eprintln!("Stream error: {}", err),
-                None,
-            )?;
-
-            stream.play()?;
-            self.stream = Some(stream);
-
-            let spec = hound::WavSpec {
-                channels: 1,
-                sample_rate: 48000,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            };
-            let mut writer = WavWriter::create("temp.wav", spec)?;
-
-            let event_tx = self.event_tx.clone();
-            let handle = spawn(move || {
-                while let Ok(msg) = wav_rx.recv() {
-                    match msg {
-                        ProcMsg::AudioSamples(data) => {
-                            for sample in data {
-                                let _ = writer.write_sample(sample);
-                            }
-                        }
-                        ProcMsg::Stop => break,
-                    }
-                }
-                let _ = event_tx.send(Event::Finished);
-            });
-            self.writer_handle = Some(handle);
-
-            Ok(())
-        }
-
-        fn stop_record(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-            if let Some(stream) = self.stream.take() {
-                let _ = stream.pause();
-                drop(stream);
-            }
-
-            let _ = self.wav_tx.send(ProcMsg::Stop);
-            if let Ok(Event::Finished) = self.event_rx.recv() {}
-
-            if let Some(h) = self.writer_handle.take() {
-                let _ = h.join();
-            }
-
-            Ok(())
-        }
-    }
-
-    pub fn find_device(name: &str) -> Option<Device> {
-        let host = cpal::default_host();
-        let devices: Vec<_> = host.input_devices().ok()?.collect();
-        devices.into_iter().find(|d| {
-            d.description()
-                .map(|desc| desc.name().contains(name))
-                .unwrap_or(false)
-        })
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub use linux::{CpalAudioCapture, find_device};
-
-// ============================================================================
-// Общие утилиты
-// ============================================================================
